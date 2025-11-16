@@ -1,0 +1,49 @@
+{
+  "name": "juristcu-api",
+  "version": "1.0.0",
+  "description": "API para análise e categorização de casos concretos baseado em acórdãos do TCU com suporte a múltiplas IAs (OpenAI, Gemini, Claude)",
+  "main": "juristcu-api.js",
+  "scripts": {
+    "start": "node juristcu-api.js",
+    "dev": "nodemon juristcu-api.js",
+    "check-quota": "node check-openai-quota.js",
+    "claude": "claude-code",
+    "claude:analyze": "claude-code \"Analise a estrutura deste projeto Node.js, focando em llm-runner.js e juristcu-api.js. Sugira melhorias na organização, performance e tratamento de erros.\"",
+    "claude:refactor": "claude-code \"Revise o código em busca de: 1) Melhorias de performance nas chamadas às APIs de IA, 2) Otimização do controle de fallback entre IAs, 3) Melhores práticas de tratamento de erros, 4) Segurança na manipulação de API keys.\"",
+    "claude:docs": "claude-code \"Gere documentação completa para esta API, incluindo: 1) Descrição de todos os endpoints, 2) Exemplos de requisições e respostas, 3) Explicação do sistema de categorização de acórdãos, 4) Guia de configuração das múltiplas IAs.\"",
+    "claude:optimize": "claude-code \"Analise o sistema de avaliação de critérios e sugira otimizações para: 1) Reduzir tempo de processamento, 2) Melhorar a precisão das categorizações, 3) Otimizar uso de tokens das APIs.\"",
+    "claude:tests": "claude-code \"Crie uma suíte completa de testes para: 1) llm-runner.js (testes de integração com as 3 IAs), 2) Sistema de autenticação, 3) Endpoints da API, 4) Lógica de categorização.\"",
+    "claude:security": "claude-code \"Faça uma análise de segurança completa focando em: 1) Proteção das API keys, 2) Validação de inputs, 3) Rate limiting, 4) Tratamento de dados sensíveis do TCU.\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "tcu",
+    "acordaos",
+    "api",
+    "ia",
+    "analise-juridica",
+    "openai",
+    "gemini",
+    "claude",
+    "anthropic",
+    "llm",
+    "multi-ia"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@google/generative-ai": "^0.21.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "openai": "^4.67.3"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "^1.0.0",
+    "nodemon": "^3.1.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
