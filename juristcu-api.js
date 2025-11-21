@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const MODO_DEBUG = process.env.MODO_DEBUG === 'true';
 const API_KEY = process.env.API_KEY;
-const MAX_RETORNO_PADRAO = 10; // Renomeado para deixar claro que é o retorno, não o processamento
+const MAX_RETORNO_PADRAO = 10;
 
 // Middleware
 app.use(express.json());
@@ -21,7 +21,7 @@ let todasChavesGeminiFalharam = false;
 let quotaClaudeExcedida = false;
 let quotaOpenAIExcedida = false;
 const chavesGemini = process.env.GEMINI_KEYS?.split(',').map(k => k.trim()).filter(k => k) || [];
-const chaveClaude = process.env.ANTHROPIC_API_KEY; // Corrigido para ANTHROPIC_API_KEY
+const chaveClaude = process.env.ANTHROPIC_API_KEY;
 const chaveOpenAI = process.env.OPENAI_API_KEY;
 
 function log(mensagem) {
@@ -41,7 +41,6 @@ function inicializarSupabase() {
   supabase = createClient(supabaseUrl, supabaseKey);
   log('Cliente Supabase inicializado');
   
-  // Validar pelo menos uma chave de IA
   if (chavesGemini.length === 0 && !chaveClaude && !chaveOpenAI) {
     throw new Error('Pelo menos uma chave de IA é necessária (GEMINI_KEYS, ANTHROPIC_API_KEY ou OPENAI_API_KEY)');
   }
@@ -180,6 +179,28 @@ const CRITERIOS = {
   }
 };
 
+// ==================== FUNÇÃO DE RESUMO ====================
+function imprimirResumoProcessamento(stats) {
+  const tempoTotal = ((Date.now() - stats.inicioProcessamento) / 1000).toFixed(2);
+  
+  console.log('\n╔════════════════════════════════════════════════════════════╗');
+  console.log('║           RESUMO DO PROCESSAMENTO                          ║');
+  console.log('╚════════════════════════════════════════════════════════════╝\n');
+  
+  console.log(`⏱️  Tempo total: ${tempoTotal}s`);
+  console.log(`📊 Acórdãos analisados: ${stats.acordaosProcessados}/${stats.totalAcordaos}`);
+  console.log(`✅ Acórdãos relevantes encontrados: ${stats.todosResultados.length}`);
+  console.log(`📋 Acórdãos retornados: ${stats.resultadosFinais.length}`);
+  console.log(`📈 Progresso: ${((stats.acordaosProcessados / stats.totalAcordaos) * 100).toFixed(1)}%`);
+  
+  console.log(`\n🤖 IAs utilizadas durante processamento:`);
+  console.log(`   - Gemini: ${todasChavesGeminiFalharam ? '❌ Falharam todas as chaves' : '✅ Usado com sucesso'}`);
+  console.log(`   - Claude: ${quotaClaudeExcedida ? '⚠️  Quota excedida' : (chaveClaude ? (todasChavesGeminiFalharam ? '✅ Usado com sucesso' : 'Não foi necessário') : 'Não configurado')}`);
+  console.log(`   - OpenAI: ${quotaOpenAIExcedida ? '⚠️  Quota excedida' : (chaveOpenAI ? ((todasChavesGeminiFalharam && quotaClaudeExcedida) ? '✅ Usado com sucesso' : 'Não foi necessário') : 'Não configurado')}`);
+  
+  console.log('\n════════════════════════════════════════════════════════════\n');
+}
+
 // ==================== FUNÇÕES DE AVALIAÇÃO COM IA ====================
 async function avaliarCriterioComIA(casoConcreto, acordao, criterio, llmAtual) {
   const prompt = `Você é um especialista em análise de acórdãos do TCU.
@@ -230,15 +251,11 @@ IMPORTANTE: Seja rigoroso. O critério deve ser claramente atendido.`;
     return { atende: false, justificativa: 'Resposta da IA inválida' };
     
   } catch (erro) {
-    // QUALQUER ERRO = LANÇAR EXCEÇÃO (não mais retornar silenciosamente)
-    
-    // Para Gemini: QUALQUER erro significa trocar de chave ou mudar de IA
     if (llmAtual === 'gemini') {
       log(`❌ Gemini falhou: ${erro.message.substring(0, 100)}`);
       throw new Error('ERRO_GEMINI');
     }
     
-    // Para Claude: verificar se é erro de quota
     if (llmAtual === 'claude') {
       log(`❌ Claude falhou: ${erro.message.substring(0, 100)}`);
       if (erro.status === 429 || erro.status === 402 || 
@@ -246,11 +263,9 @@ IMPORTANTE: Seja rigoroso. O critério deve ser claramente atendido.`;
         quotaClaudeExcedida = true;
         throw new Error('QUOTA_CLAUDE_EXCEDIDA');
       }
-      // Qualquer outro erro do Claude também deve trocar de IA
       throw new Error('ERRO_CLAUDE');
     }
     
-    // Para OpenAI: verificar se é erro de quota
     if (llmAtual === 'openai') {
       log(`❌ OpenAI falhou: ${erro.message.substring(0, 100)}`);
       if (erro.message.includes('quota') || erro.message.includes('rate_limit') ||
@@ -258,41 +273,31 @@ IMPORTANTE: Seja rigoroso. O critério deve ser claramente atendido.`;
         quotaOpenAIExcedida = true;
         throw new Error('QUOTA_OPENAI_EXCEDIDA');
       }
-      // Qualquer outro erro da OpenAI
       throw new Error('ERRO_OPENAI');
     }
     
-    // Erro genérico
     throw erro;
   }
 }
 
 // ==================== SELECIONAR LLM DISPONÍVEL ====================
 function selecionarLLMDisponivel() {
-  // Verificar se ainda há IAs disponíveis
   if (todasChavesGeminiFalharam && quotaClaudeExcedida && quotaOpenAIExcedida) {
     throw new Error('TODAS_IAS_INDISPONIVEIS');
   }
   
-  // PRIORIDADE: Gemini -> Claude -> OpenAI
-  // Uma vez que uma IA falha, ela nunca mais é tentada
-  
-  // 1. Tentar Gemini (se ainda não falhou)
   if (!todasChavesGeminiFalharam && chavesGemini.length > 0) {
     return 'gemini';
   }
   
-  // 2. Se Gemini falhou, tentar Claude (se disponível e não excedeu quota)
   if (todasChavesGeminiFalharam && chaveClaude && !quotaClaudeExcedida) {
     return 'claude';
   }
   
-  // 3. Se Gemini e Claude falharam, usar OpenAI
   if (todasChavesGeminiFalharam && quotaClaudeExcedida && chaveOpenAI && !quotaOpenAIExcedida) {
     return 'openai';
   }
   
-  // Se chegou aqui, não há IAs disponíveis
   throw new Error('TODAS_IAS_INDISPONIVEIS');
 }
 
@@ -312,7 +317,6 @@ async function avaliarCategoriaSubcategoria(casoConcreto, acordao, categoria, su
   for (let i = 0; i < criterios.length; i++) {
     const criterio = criterios[i];
     
-    // Selecionar LLM disponível (com lógica de prioridade)
     let llmAtual;
     try {
       llmAtual = selecionarLLMDisponivel();
@@ -341,43 +345,37 @@ async function avaliarCategoriaSubcategoria(casoConcreto, acordao, categoria, su
         log(`      ❌ NÃO ATENDE`);
       }
       
-      // ⏱️ PAUSA DE 0.5 SEGUNDOS ENTRE AVALIAÇÕES
       await new Promise(resolve => setTimeout(resolve, 500));
       
     } catch (erro) {
-      // === TRATAMENTO DE ERROS GEMINI ===
       if (erro.message === 'ERRO_GEMINI' && llmAtual === 'gemini') {
         chaveGeminiAtual++;
         
-        // Se ainda há chaves Gemini para tentar
         if (chaveGeminiAtual < chavesGemini.length) {
           log(`    ⚠️  Gemini chave ${chaveGeminiAtual}/${chavesGemini.length} falhou - tentando próxima chave`);
-          i--; // Repetir este critério com próxima chave
+          i--;
           continue;
         } else {
-          // TODAS as chaves Gemini falharam
           todasChavesGeminiFalharam = true;
           log('\n╔════════════════════════════════════════════════════════════╗');
           log('║  🚫 TODAS AS CHAVES GEMINI FALHARAM                        ║');
           log('║  ➡️  MUDANDO PERMANENTEMENTE PARA CLAUDE                   ║');
           log('╚════════════════════════════════════════════════════════════╝\n');
-          i--; // Repetir este critério com Claude
+          i--;
           continue;
         }
       }
       
-      // === TRATAMENTO DE ERROS CLAUDE ===
       if ((erro.message === 'QUOTA_CLAUDE_EXCEDIDA' || erro.message === 'ERRO_CLAUDE') && llmAtual === 'claude') {
         quotaClaudeExcedida = true;
         log('\n╔════════════════════════════════════════════════════════════╗');
         log('║  ⚠️  CLAUDE FALHOU OU QUOTA EXCEDIDA                       ║');
         log('║  ➡️  MUDANDO PERMANENTEMENTE PARA OPENAI                   ║');
         log('╚════════════════════════════════════════════════════════════╝\n');
-        i--; // Repetir este critério com OpenAI
+        i--;
         continue;
       }
       
-      // === TRATAMENTO DE ERROS OPENAI ===
       if (erro.message === 'QUOTA_OPENAI_EXCEDIDA') {
         log('    🚫 Quota OpenAI excedida - última IA disponível falhou');
         throw erro;
@@ -389,12 +387,10 @@ async function avaliarCategoriaSubcategoria(casoConcreto, acordao, categoria, su
         throw new Error('QUOTA_OPENAI_EXCEDIDA');
       }
       
-      // === TODAS IAs INDISPONÍVEIS ===
       if (erro.message === 'TODAS_IAS_INDISPONIVEIS') {
         throw erro;
       }
       
-      // === ERRO DESCONHECIDO ===
       log(`    ⚠️  Erro não tratado: ${erro.message}`);
       resultados.criterios.push({
         numero: i + 1,
@@ -420,7 +416,7 @@ async function buscarTodosAcordaos() {
       .select('*')
       .not('texto_pdf', 'is', null)
       .not('sumario', 'is', null)
-      .order('data_sessao', { ascending: false }); // Ordenar por data
+      .order('data_sessao', { ascending: false });
     
     if (error) throw error;
     
@@ -443,6 +439,14 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
   const dataHoraInicio = new Date().toISOString();
   log('\n========== NOVA REQUISIÇÃO DE ANÁLISE ==========');
   
+  const stats = {
+    inicioProcessamento,
+    acordaosProcessados: 0,
+    totalAcordaos: 0,
+    todosResultados: [],
+    resultadosFinais: []
+  };
+  
   try {
     const { caso_concreto, max_resultados, max_acordaos } = req.body;
     
@@ -460,18 +464,13 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
       });
     }
     
-    // max_resultados define quantos acórdãos RETORNAR nos resultados finais
     const limiteRetorno = Math.min(max_resultados || MAX_RETORNO_PADRAO, 100);
-    
-    // max_acordaos define quantos acórdãos PROCESSAR (limite de processamento)
-    // Se não definido, processa TODOS os acórdãos do banco
     const limiteProcessamento = max_acordaos ? Math.min(max_acordaos, 10000) : null;
     
     log(`Caso concreto: ${caso_concreto.substring(0, 100)}...`);
     log(`Limite de processamento: ${limiteProcessamento ? `${limiteProcessamento} acórdãos` : 'TODOS os acórdãos'}`);
     log(`Limite de retorno: ${limiteRetorno} acórdãos mais relevantes`);
     
-    // Verificar quota das IAs antes de começar
     if (chaveOpenAI) {
       try {
         const quotaOpenAI = await verificarQuotaOpenAI({ apiKey: chaveOpenAI });
@@ -490,7 +489,6 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
       }
     }
     
-    // BUSCAR TODOS OS ACÓRDÃOS DO BANCO
     const todosAcordaos = await buscarTodosAcordaos();
     
     if (todosAcordaos.length === 0) {
@@ -500,13 +498,14 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
       });
     }
     
+    stats.totalAcordaos = todosAcordaos.length;
+    
     log(`\n🔍 Iniciando análise de TODOS os ${todosAcordaos.length} acórdãos do banco...`);
     log(`📊 Serão retornados os ${limiteRetorno} acórdãos mais relevantes\n`);
     
     const todosResultados = [];
     let acordaosProcessados = 0;
     
-    // PROCESSAR TODOS OS ACÓRDÃOS
     for (let i = 0; i < todosAcordaos.length; i++) {
       const acordao = todosAcordaos[i];
       
@@ -515,7 +514,6 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
       try {
         const categoriasEncontradas = [];
         
-        // Avaliar todas as categorias e subcategorias
         for (const [categoria, subcategorias] of Object.entries(CRITERIOS)) {
           for (const subcategoria of Object.keys(subcategorias)) {
             
@@ -527,7 +525,6 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
                 subcategoria
               );
               
-              // Incluir apenas se tiver relevância >= 60%
               if (resultado.percentualAtendimento >= 60) {
                 categoriasEncontradas.push(resultado);
               }
@@ -535,12 +532,21 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
               if (erro.message === 'QUOTA_OPENAI_EXCEDIDA') {
                 log('\n🚫 QUOTA DA OPENAI EXCEDIDA - Parando processamento');
                 
+                stats.acordaosProcessados = acordaosProcessados;
+                stats.todosResultados = todosResultados;
+                stats.resultadosFinais = todosResultados
+                  .sort((a, b) => b.melhor_percentual - a.melhor_percentual)
+                  .slice(0, limiteRetorno);
+                
+                imprimirResumoProcessamento(stats);
+                
                 return res.status(503).json({
                   erro: 'Quota de IA excedida',
                   mensagem: 'A quota da OpenAI foi excedida durante o processamento.',
-                  resultados_parciais: todosResultados
-                    .sort((a, b) => b.melhor_percentual - a.melhor_percentual)
-                    .slice(0, limiteRetorno),
+                  resultados_parciais: stats.resultadosFinais.map(r => ({
+                    acordao: r.acordao,
+                    categorias: r.categorias
+                  })),
                   acordaos_processados: acordaosProcessados,
                   total_acordaos: todosAcordaos.length,
                   progresso_percentual: ((acordaosProcessados / todosAcordaos.length) * 100).toFixed(2)
@@ -556,6 +562,14 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
               if (erro.message === 'TODAS_IAS_INDISPONIVEIS') {
                 log('\n⚠️  TODAS AS IAs INDISPONÍVEIS - Parando processamento');
                 
+                stats.acordaosProcessados = acordaosProcessados;
+                stats.todosResultados = todosResultados;
+                stats.resultadosFinais = todosResultados
+                  .sort((a, b) => b.melhor_percentual - a.melhor_percentual)
+                  .slice(0, limiteRetorno);
+                
+                imprimirResumoProcessamento(stats);
+                
                 return res.status(503).json({
                   erro: 'Serviços de IA indisponíveis',
                   mensagem: 'Todas as opções de IA estão indisponíveis no momento.',
@@ -564,9 +578,10 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
                     claude: quotaClaudeExcedida ? 'Quota excedida' : (chaveClaude ? 'Disponível' : 'Não configurado'),
                     openai: quotaOpenAIExcedida ? 'Quota excedida' : (chaveOpenAI ? 'Disponível' : 'Não configurado')
                   },
-                  resultados_parciais: todosResultados
-                    .sort((a, b) => b.melhor_percentual - a.melhor_percentual)
-                    .slice(0, limiteRetorno),
+                  resultados_parciais: stats.resultadosFinais.map(r => ({
+                    acordao: r.acordao,
+                    categorias: r.categorias
+                  })),
                   acordaos_processados: acordaosProcessados,
                   total_acordaos: todosAcordaos.length,
                   progresso_percentual: ((acordaosProcessados / todosAcordaos.length) * 100).toFixed(2)
@@ -580,7 +595,6 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
         
         acordaosProcessados++;
         
-        // Se encontrou categorias relevantes, adicionar aos resultados
         if (categoriasEncontradas.length > 0) {
           const melhorPercentual = Math.max(...categoriasEncontradas.map(c => c.percentualAtendimento));
           
@@ -598,13 +612,12 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
             categorias: categoriasEncontradas.sort((a, b) => 
               b.percentualAtendimento - a.percentualAtendimento
             ),
-            melhor_percentual: melhorPercentual // Para ordenação
+            melhor_percentual: melhorPercentual
           });
           
           log(`  ✅ Acórdão relevante encontrado! Melhor match: ${melhorPercentual.toFixed(1)}%`);
         }
         
-        // Log de progresso a cada 10 acórdãos
         if (acordaosProcessados % 10 === 0) {
           const progresso = ((acordaosProcessados / todosAcordaos.length) * 100).toFixed(1);
           log(`\n📈 Progresso: ${acordaosProcessados}/${todosAcordaos.length} (${progresso}%) - ${todosResultados.length} relevantes encontrados`);
@@ -616,7 +629,6 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
       }
     }
     
-    // ORDENAR RESULTADOS POR RELEVÂNCIA E PEGAR APENAS OS TOP N
     const resultadosFinais = todosResultados
       .sort((a, b) => b.melhor_percentual - a.melhor_percentual)
       .slice(0, limiteRetorno)
@@ -625,17 +637,13 @@ app.post('/api/v1/analisar-caso', autenticar, async (req, res) => {
         categorias: r.categorias
       }));
     
-    const tempoTotal = ((Date.now() - inicioProcessamento) / 1000).toFixed(2);
+    stats.acordaosProcessados = acordaosProcessados;
+    stats.todosResultados = todosResultados;
+    stats.resultadosFinais = resultadosFinais;
     
-    log(`\n========== ANÁLISE CONCLUÍDA ==========`);
-    log(`⏱️  Tempo total: ${tempoTotal}s`);
-    log(`📊 Acórdãos analisados: ${acordaosProcessados}/${todosAcordaos.length}`);
-    log(`✅ Acórdãos relevantes encontrados: ${todosResultados.length}`);
-    log(`📋 Acórdãos retornados: ${resultadosFinais.length}`);
-    log(`\n🤖 IAs utilizadas durante processamento:`);
-    log(`   - Gemini: ${todasChavesGeminiFalharam ? '❌ Falharam todas as chaves' : '✅ Usado com sucesso'}`);
-    log(`   - Claude: ${quotaClaudeExcedida ? '⚠️  Quota excedida' : (chaveClaude ? (todasChavesGeminiFalharam ? '✅ Usado com sucesso' : 'Não foi necessário') : 'Não configurado')}`);
-    log(`   - OpenAI: ${quotaOpenAIExcedida ? '⚠️  Quota excedida' : (chaveOpenAI ? ((todasChavesGeminiFalharam && quotaClaudeExcedida) ? '✅ Usado com sucesso' : 'Não foi necessário') : 'Não configurado')}`);
+    imprimirResumoProcessamento(stats);
+    
+    const tempoTotal = ((Date.now() - inicioProcessamento) / 1000).toFixed(2);
     
     res.status(200).json({
       sucesso: true,
@@ -774,7 +782,6 @@ async function iniciar() {
     
     inicializarSupabase();
     
-    // Buscar estatísticas do banco
     try {
       const { count: totalAcordaos } = await supabase
         .from('acordaos')
